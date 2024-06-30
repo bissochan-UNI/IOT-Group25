@@ -1,5 +1,4 @@
-#include "timer.h"
-#include "gpio.h"
+#include "msp.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8,122 +7,118 @@
 #include <ti/grlib/grlib.h>
 #include "Drivers/Crystalfontz128x128_ST7735.h"
 #include "Drivers/HAL_I2C.h"
+#include "Drivers/HAL_TMP006.h"
+#include "Drivers/HAL_OPT3001.h"
 
 /* Graphic library context */
-Graphics_Context g_sContext;
+extern Graphics_Context g_sContext;
 
-volatile int timerA0Expired = 0;
-volatile int timerA1Expired = 0;
-volatile int buzzerState = 0;
-
-void configureTimer(void) {
-    // Configura il timer A0
-    //TIMER_A0->CTL = TIMER_A_CTL_SSEL__SMCLK; // Usa SMCLK
-    //TIMER_A0->CTL |= TIMER_A_CTL_MC__STOP; // Modalità stop per configurazione
-    //TIMER_A0->CTL |= TIMER_A_CTL_ID_3; // Usa un prescaler per dividere il clock per 8
-    //TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE; // Abilita l'interruzione per CCR0
-    //TIMER_A0->CCR[0] = 100; // 37500 = 5 minuti (3 MHz / 8 / 50000 = 7.5 Hz, 5 * 60 * 7.5)
-    //NVIC->ISER[0] = 1 << ((TA0_0_IRQn) & 31); // Abilita IRQ per TA0
-
-    TIMER_A0->CTL = TIMER_A_CTL_SSEL__SMCLK | TIMER_A_CTL_MC__UP | TIMER_A_CTL_ID__8; // Use SMCLK, Up mode, divide by 8
-    TIMER_A0->CCR[0] = 65535; // Max value for CCR0
-    TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE; // Enable interrupt for CCR0
-    NVIC->ISER[0] = 1 << ((TA0_0_IRQn) & 31); // Enable IRQ for TA0
-
-
-    // Configura il timer A1
-    TIMER_A1->CTL = TIMER_A_CTL_SSEL__SMCLK; // Usa SMCLK
-    TIMER_A1->CTL |= TIMER_A_CTL_MC__STOP; // Modalità stop per configurazione
-    TIMER_A1->CTL |= TIMER_A_CTL_ID_3; // Usa un prescaler per dividere il clock per 8
-    TIMER_A1->CCTL[0] = TIMER_A_CCTLN_CCIE; // Abilita l'interruzione per CCR0
-    TIMER_A1->CCR[0] = 22500; // 3 minuti (3 MHz / 8 / 50000 = 7.5 Hz, 3 * 60 * 7.5)
-    NVIC->ISER[0] = 1 << ((TA1_0_IRQn) & 31); // Abilita IRQ per TA1
-
-    // Configura il timer A2 per il buzzer
-    TIMER_A2->CTL = TIMER_A_CTL_SSEL__SMCLK; // Usa SMCLK
-    TIMER_A2->CTL |= TIMER_A_CTL_MC__STOP; // Modalità stop per configurazione
-    TIMER_A2->CTL |= TIMER_A_CTL_ID_3; // Usa un prescaler per dividere il clock per 8
-    TIMER_A2->CCTL[0] = TIMER_A_CCTLN_CCIE; // Abilita l'interruzione per CCR0
-    TIMER_A2->CCR[0] = 9375; // Bip ogni 1 secondo (3 MHz / 8 / 9375 = 40 Hz, 0.5s on, 0.5s off)
-    NVIC->ISER[0] = 1 << ((TA2_0_IRQn) & 31); // Abilita IRQ per TA2
-
+// Initialize temperature sensor
+void temp_sensor_init(){
+    Init_I2C_GPIO();
+    I2C_init();
+    TMP006_init();
+    __delay_cycles(100000);
 }
 
-void startTimerA0(void) {
-    timerA0Expired = 0;
-    TIMER_A0->CTL |= TIMER_A_CTL_CLR; // Resetta il timer
-    TIMER_A0->CTL |= TIMER_A_CTL_MC__UP; // Modalità up
+// Initialize light sensor
+void lux_sensor_init(){
+    Init_I2C_GPIO();
+    I2C_init();
+    OPT3001_init();
+    __delay_cycles(100000);
 }
 
-void stopTimerA0(void) {
-    TIMER_A0->CTL &= ~TIMER_A_CTL_MC_0; // Ferma il timer
+/* Timer_A Compare Configuration Parameter (PWM) */
+Timer_A_CompareModeConfig compareConfig_PWM = {
+    TIMER_A_CAPTURECOMPARE_REGISTER_4,          // Use CCR4
+    TIMER_A_CAPTURECOMPARE_INTERRUPT_DISABLE,   // Disable CCR interrupt
+    TIMER_A_OUTPUTMODE_TOGGLE_SET,              // Toggle output but
+    10000                                       // 25% Duty Cycle initially
+};
+
+/* Timer_A Up Configuration Parameter */
+const Timer_A_UpModeConfig upConfig = {
+    TIMER_A_CLOCKSOURCE_SMCLK,                  // SMCLK = 3 MHz
+    TIMER_A_CLOCKSOURCE_DIVIDER_12,             // SMCLK/12 = 250 kHz
+    20000,                                      // 40 ms tick period
+    TIMER_A_TAIE_INTERRUPT_DISABLE,             // Disable Timer interrupt
+    TIMER_A_CCIE_CCR0_INTERRUPT_DISABLE,        // Disable CCR0 interrupt
+    TIMER_A_DO_CLEAR                            // Clear value
+};
+
+// Initialize buzzer
+void buzzerInit() {
+    // Configures P2.7 to PM_TA0.4 for using Timer PWM to control the buzzer
+    GPIO_setAsPeripheralModuleFunctionOutputPin(GPIO_PORT_P2, GPIO_PIN7, GPIO_PRIMARY_MODULE_FUNCTION);
+
+    // Configuring Timer_A0 for Up Mode and starting
+    Timer_A_configureUpMode(TIMER_A3_BASE, &upConfig);
+    Timer_A_startCounter(TIMER_A3_BASE, TIMER_A_UP_MODE);
+
+    // Initialize compare registers to generate PWM
+    Timer_A_initCompare(TIMER_A3_BASE, &compareConfig_PWM); // For P2.7
 }
 
-void resetTimerA0(void) {
-    stopTimerA0();
-    startTimerA0();
+// Read temperature
+float read_temp() {
+    return TMP006_getTemp();
 }
 
-void startTimerA1(void) {
-    timerA1Expired = 0;
-    TIMER_A1->CTL |= TIMER_A_CTL_CLR; // Resetta il timer
-    TIMER_A1->CTL |= TIMER_A_CTL_MC__UP; // Modalità up
+// Read light intensity
+float read_lux() {
+    return OPT3001_getLux();
 }
 
-void stopTimerA1(void) {
-    TIMER_A1->CTL &= ~TIMER_A_CTL_MC_0; // Ferma il timer
+// Turn on red LED
+void turnOnRedLED() {
+    GPIO_setOutputHighOnPin(GPIO_PORT_P1, GPIO_PIN0);
 }
 
-void startBuzzerTimer(void) {
-    buzzerState = 0;
-    TIMER_A2->CTL |= TIMER_A_CTL_CLR; // Resetta il timer
-    TIMER_A2->CTL |= TIMER_A_CTL_MC__UP; // Modalità up
+// Turn off red LED
+void turnOffRedLED() {
+    GPIO_setOutputLowOnPin(GPIO_PORT_P1, GPIO_PIN0);
 }
 
-void stopBuzzerTimer(void) {
-    TIMER_A2->CTL &= ~TIMER_A_CTL_MC_0; // Ferma il timer
+// Turn on buzzer
+void turnOnBuzzer() {
+    Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_4, 5000);
 }
 
-
-
-/* Handler dell'interruzione del timer A0 */
-//void TA0_0_IRQHandler(void) {
-    // Pulisce il flag di interruzione
-    //TIMER_A0->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG;
-    // Segna che il timer è scaduto
-    //timerA0Expired = 1;
-//}
-
-volatile uint32_t overflow_count = 0;
-
-void TA0_0_IRQHandler(void) {
-    TIMER_A0->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG; // Clear interrupt flag
-    overflow_count++;
-    if (overflow_count >= 1717) {
-        // 5 minutes elapsed
-        overflow_count = 0; // Reset for next time if needed
-        // Perform desired action here
-    }
+// Turn off buzzer
+void turnOffBuzzer() {
+    Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_4, 0);
 }
 
-
-/* Handler dell'interruzione del timer A1 */
-void TA1_0_IRQHandler(void) {
-    // Pulisce il flag di interruzione
-    TIMER_A1->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG;
-    // Segna che il timer è scaduto
-    timerA1Expired = 1;
+// Initialize display
+void initDisplay() {
+    Crystalfontz128x128_Init();
+    Crystalfontz128x128_SetOrientation(LCD_ORIENTATION_UP);
+    Graphics_initContext(&g_sContext, &g_sCrystalfontz128x128);
+    Graphics_setForegroundColor(&g_sContext, GRAPHICS_COLOR_YELLOW);
+    Graphics_setBackgroundColor(&g_sContext, GRAPHICS_COLOR_BLACK);
+    GrContextFontSet(&g_sContext, &g_sFontFixed6x8);
 }
 
-/* Handler dell'interruzione del timer A2 */
-void TA2_0_IRQHandler(void) {
-    // Pulisce il flag di interruzione
-    TIMER_A2->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG;
-    // Alterna lo stato del buzzer
-    buzzerState = !buzzerState;
-    if (buzzerState) {
-        turnOnBuzzer();
-    } else {
-        turnOffBuzzer();
-    }
+// Clear display
+void clearDisplay() {
+    Graphics_clearDisplay(&g_sContext);
+}
+
+// Display message on screen
+void displayMessage(const char *message) {
+    Graphics_clearDisplay(&g_sContext);
+    Graphics_drawStringCentered(&g_sContext, (int8_t *) message, AUTO_STRING_LENGTH, 64, 64, OPAQUE_TEXT);
+}
+
+// Configure GPIO ports
+void configurePorts() {
+    // Configure P1.0 as output (LED)
+    P1->DIR |= BIT0;
+    P1->OUT &= ~BIT0;
+
+    // Configure P1.1 and P1.4 as input (buttons)
+    P1->DIR &= ~(BIT1 | BIT4);
+    P1->REN |= BIT1 | BIT4;
+    P1->OUT |= BIT1 | BIT4;
 }
