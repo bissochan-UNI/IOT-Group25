@@ -45,7 +45,7 @@ The project consists of the following main components:
 3. **Operation**:
    - Use the physical buttons to navigate through the menu and select tasks.
    - Monitor the LCD screen for real-time updates and feedback.
-   - Observe the LEDs and buzzer for alerts and system states.
+   - Observe the LEDs for alerts and system states.
 
 ## Link utili
 
